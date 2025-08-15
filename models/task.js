@@ -21,6 +21,14 @@ const Task = sequelize.define("Task", {
     dueDate: {
         type: DataTypes.DATE,
         allowNull: true,
+    },
+    userId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+            model: 'users',
+            key: 'id'
+        }
     }
 }, {
     timestamps: true,
