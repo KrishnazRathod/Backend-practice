@@ -1,58 +1,97 @@
 const express = require('express');
 const app = express();
-
+const { Task, sequelize } = require('./models');
 app.use(express.json());
 
-const tasks = [
-    { id: 1, title: "Task 1", description: "Description 1" },
-    { id: 2, title: "Task 2", description: "Description 2" },
-    { id: 3, title: "Task 3", description: "Description 3" },
-];
+
+sequelize.authenticate().then(() => {
+    console.log("Database connection established successfully!");
+}).catch((error) => {
+    console.error("Unable to connect to the database:", error);
+});
 
 
-const newId = tasks.length + 1;
 app.get('/', (req, res) => {
     res.send('Hello World');
 });
 
-
-app.get("/tasks", (req, res) => {
-    res.json(tasks);
+// Updated to use database
+app.get("/tasks", async (req, res) => {
+    try {
+        const tasks = await Task.findAll();
+        res.json(tasks);
+    } catch (error) {
+        console.error('Error fetching tasks:', error);
+        res.status(500).json({ error: "Failed to fetch tasks" });
+    }
 });
 
-app.post("/task", (req, res) => {
-    console.log(req.body)
-    const newTask = {
-        id: newId,
-        title: req.body.title,
-        description: req.body.description,
-    };
-    tasks.push(newTask);
-    res.status(201).json(newTask);
+// Updated to use Task model and database
+app.post("/task", async (req, res) => {
+    try {
+        console.log("Received request body:", req.body);
+
+        const taskData = {
+            title: req.body.title,
+            description: req.body.description,
+            status: req.body.status || "pending",
+            dueDate: req.body.dueDate || null
+        };
+
+        console.log("Task data to create:", taskData);
+
+        const newTask = await Task.create(taskData);
+        console.log("Created task:", newTask.toJSON());
+
+        res.status(201).json(newTask);
+    } catch (error) {
+        console.error('Error creating task:', error);
+        res.status(400).json({ error: "Failed to create task", details: error.message });
+    }
 });
 
-app.put("/task/:id", (req, res) => {
-    const taskId = parseInt(req.params.id)
-    const { title, description } = req.body
-    const task = tasks.find(t => t.id === taskId)
-    if (!task) {
-        return res.status((404).json({ error: "task not found" }))
-    }
-    if (title !== undefined) task.title = title
-    if (description !== undefined) task.description = description
+// Updated to use database
+app.put("/task/:id", async (req, res) => {
+    try {
+        const taskId = parseInt(req.params.id);
+        const { title, description, status, dueDate } = req.body;
 
-    res.json(task)
-})
+        const task = await Task.findByPk(taskId);
+        if (!task) {
+            return res.status(404).json({ error: "Task not found" });
+        }
 
-app.delete("/task/:id", (req, res) => {
-    const taskId = parseInt(req.params.id)
-    const index = tasks.findIndex(t => t.id === taskId)
-    if (index === -1) {
-        return res.status((404).json({ error: "task not found" }))
+        // Update only provided fields
+        if (title !== undefined) task.title = title;
+        if (description !== undefined) task.description = description;
+        if (status !== undefined) task.status = status;
+        if (dueDate !== undefined) task.dueDate = dueDate;
+
+        await task.save();
+        res.json(task);
+    } catch (error) {
+        console.error('Error updating task:', error);
+        res.status(500).json({ error: "Failed to update task" });
     }
-    const deleteTask = tasks.splice(index, 1)[0]
-    res.json(deleteTask)
-})
+});
+
+// Updated to use database
+app.delete("/task/:id", async (req, res) => {
+    try {
+        const taskId = parseInt(req.params.id);
+        const task = await Task.findByPk(taskId);
+
+        if (!task) {
+            return res.status(404).json({ error: "Task not found" });
+        }
+
+        await task.destroy();
+        res.json({ message: "Task deleted successfully" });
+    } catch (error) {
+        console.error('Error deleting task:', error);
+        res.status(500).json({ error: "Failed to delete task" });
+    }
+});
 
 const PORT = 3000;
 app.listen(PORT, () => {
