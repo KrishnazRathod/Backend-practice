@@ -13,13 +13,8 @@ const taskSchema = Joi.object({
     dueDate: Joi.date().min('now').optional()
         .messages({
             'date.min': 'Due date cannot be in the past'
-        }),
-    userId: Joi.number().integer().positive().required()
-        .messages({
-            'number.base': 'User ID must be a number',
-            'number.integer': 'User ID must be an integer',
-            'number.positive': 'User ID must be positive'
         })
+    // Remove userId requirement - it's set automatically from req.user.id
 });
 
 const userSchema = Joi.object({
@@ -51,13 +46,8 @@ const commentSchema = Joi.object({
             'string.empty': 'Comment content cannot be empty',
             'string.min': 'Comment must be at least 1 character long',
             'string.max': 'Comment cannot exceed 1000 characters'
-        }),
-    userId: Joi.number().integer().positive().required()
-        .messages({
-            'number.base': 'User ID must be a number',
-            'number.integer': 'User ID must be an integer',
-            'number.positive': 'User ID must be positive'
         })
+    // Remove userId requirement - it's set automatically from req.user.id
 });
 
 // Validation middleware functions
@@ -83,19 +73,8 @@ const validateUser = (req, res, next) => {
     next();
 };
 
-const validateComment = (req, res, next) => {
-    const { error } = commentSchema.validate(req.body);
-    if (error) {
-        return res.status(400).json({
-            error: 'Validation failed',
-            details: error.details.map(detail => detail.message)
-        });
-    }
-    next();
-};
-
 const validateCommentWithParams = (req, res, next) => {
-    // Validate the request body (content and userId)
+    // Validate the request body (content only)
     const { error } = commentSchema.validate(req.body);
     if (error) {
         return res.status(400).json({
@@ -119,6 +98,5 @@ const validateCommentWithParams = (req, res, next) => {
 module.exports = {
     validateTask,
     validateUser,
-    validateComment,
     validateCommentWithParams
 };
