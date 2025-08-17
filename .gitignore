@@ -195,3 +195,4 @@ Thumbs.db
 config/local.json
 config/production.json
 secrets.json
+package-lock.json
