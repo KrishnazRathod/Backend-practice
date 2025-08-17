@@ -1,93 +1,199 @@
 const express = require('express');
+const { Task, User, TaskComment } = require('./models');
+const sequelize = require('./config/database.js');
+const { Op } = require('sequelize');
+
+// Import middleware
+const {
+    accessLog,
+    consoleLog,
+    routeLog,
+    errorLog
+} = require('./middleware/logging.js');
+
+const {
+    globalErrorHandler,
+    notFoundHandler,
+    asyncHandler,
+    handleUnhandledRejection,
+    handleUncaughtException
+} = require('./middleware/errorHandler.js');
+
+const {
+    initializeSecurity,
+    rateLimiters,
+    speedLimiters
+} = require('./middleware/security.js');
+
+const {
+    authenticateToken,
+    authorizeRoles,
+    authorizeResourceOwnership,
+    generateToken,
+    hashPassword,
+    comparePassword,
+    validatePasswordStrength
+} = require('./middleware/authentication.js');
+
+const {
+    validateTask,
+    validateUser,
+    validateCommentWithParams
+} = require('./middleware/validation.js');
+
 const app = express();
-const { Task, User, TaskComment, sequelize } = require('./models');
-const { validateTask, validateUser, validateComment, validateCommentWithParams } = require('./middleware/validation');
 
-app.use(express.json());
+// Set up global error handlers for unhandled promises and exceptions
+process.on('unhandledRejection', handleUnhandledRejection);
+process.on('uncaughtException', handleUncaughtException);
 
-// Database connection
-sequelize.authenticate().then(() => {
-    console.log("Database connection established successfully!");
-}).catch((error) => {
-    console.error("Unable to connect to the database:", error);
+// Initialize security middleware
+initializeSecurity(app);
+
+// Body parsing middleware with size limits
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Initialize logging middleware
+app.use(accessLog); // File logging
+app.use(consoleLog); // Console logging
+
+// Apply basic rate limiting
+app.use('/api/', rateLimiters.general);
+
+// Database connection with error handling
+sequelize.authenticate()
+    .then(() => {
+        console.log("Database connection established successfully!");
+    })
+    .catch((error) => {
+        console.error("Unable to connect to the database:", error);
+        process.exit(1);
+    });
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
 // Basic route
-app.get('/', (req, res) => {
-    res.send('Enhanced Task Manager API with Users and Comments');
+app.get('/', routeLog('Home'), (req, res) => {
+    res.json({
+        message: 'Enhanced Task Manager API with Security Features',
+        version: '2.0.0',
+        features: [
+            'JWT Authentication',
+            'Role-based Authorization',
+            'Basic Rate Limiting',
+            'Security Headers',
+            'Input Validation with Joi',
+            'Comprehensive Logging',
+            'Error Handling'
+        ]
+    });
 });
 
-// USER ROUTES
+// AUTHENTICATION ROUTES
 
-// Create a new user
-app.post("/users", validateUser, async (req, res) => {
-    try {
+// User registration
+app.post("/api/auth/register",
+    routeLog('User Registration'),
+    validateUser,
+    asyncHandler(async (req, res) => {
+        // Validate password strength
+        const passwordValidation = validatePasswordStrength(req.body.password);
+        if (!passwordValidation.isValid) {
+            return res.status(400).json({
+                error: "Password validation failed",
+                details: passwordValidation.errors
+            });
+        }
+
+        // Hash password
+        const hashedPassword = await hashPassword(req.body.password);
+
         const userData = {
             username: req.body.username,
             email: req.body.email,
-            password: req.body.password, // In production, hash this password!
+            password: hashedPassword,
             role: req.body.role || 'user'
         };
 
         const newUser = await User.create(userData);
 
+        // Generate JWT tokens
+        const accessToken = generateToken(newUser, 'access');
+        const refreshToken = generateToken(newUser, 'refresh');
+
         // Don't send password in response
         const { password, ...userResponse } = newUser.toJSON();
-        res.status(201).json(userResponse);
-    } catch (error) {
-        console.error('Error creating user:', error);
-        if (error.name === 'SequelizeUniqueConstraintError') {
-            return res.status(400).json({ error: "Username or email already exists" });
-        }
-        res.status(400).json({ error: "Failed to create user", details: error.message });
-    }
-});
 
-// Get all users
-app.get("/users", async (req, res) => {
-    try {
-        const users = await User.findAll({
-            attributes: { exclude: ['password'] }, // Don't send passwords
-            order: [['createdAt', 'DESC']]
+        res.status(201).json({
+            message: "User created successfully",
+            user: userResponse,
+            tokens: {
+                access: accessToken,
+                refresh: refreshToken
+            }
         });
-        res.json(users);
-    } catch (error) {
-        console.error('Error fetching users:', error);
-        res.status(500).json({ error: "Failed to fetch users" });
-    }
-});
+    })
+);
 
-// Get user by ID
-app.get("/users/:id", async (req, res) => {
-    try {
-        const userId = parseInt(req.params.id);
-        const user = await User.findByPk(userId, {
-            attributes: { exclude: ['password'] },
-            include: [
-                {
-                    model: Task,
-                    as: 'Tasks',
-                    attributes: ['id', 'title', 'status', 'dueDate']
-                }
-            ]
+// User login
+app.post("/api/auth/login",
+    routeLog('User Login'),
+    asyncHandler(async (req, res) => {
+        const { username, email, password } = req.body;
+
+        // Find user by username or email
+        const user = await User.findOne({
+            where: {
+                [Op.or]: [
+                    { username: username || email },
+                    { email: username || email }
+                ]
+            }
         });
 
         if (!user) {
-            return res.status(404).json({ error: "User not found" });
+            return res.status(401).json({ error: "Invalid credentials" });
         }
 
-        res.json(user);
-    } catch (error) {
-        console.error('Error fetching user:', error);
-        res.status(500).json({ error: "Failed to fetch user" });
-    }
-});
+        // Verify password
+        const isValidPassword = await comparePassword(password, user.password);
+        if (!isValidPassword) {
+            return res.status(401).json({ error: "Invalid credentials" });
+        }
 
-// TASK ROUTES (Updated with user association)
+        // Generate JWT tokens
+        const accessToken = generateToken(user, 'access');
+        const refreshToken = generateToken(user, 'refresh');
 
-// Get all tasks with user information
-app.get("/tasks", async (req, res) => {
-    try {
+        // Don't send password in response
+        const { password: userPassword, ...userResponse } = user.toJSON();
+
+        res.json({
+            message: "Login successful",
+            user: userResponse,
+            tokens: {
+                access: accessToken,
+                refresh: refreshToken
+            }
+        });
+    })
+);
+
+// TASK ROUTES (Protected)
+
+// Get all tasks
+app.get("/api/tasks",
+    routeLog('Get All Tasks'),
+    authenticateToken,
+    asyncHandler(async (req, res) => {
         const { status, userId, page = 1, limit = 10 } = req.query;
 
         // Build where clause dynamically
@@ -117,22 +223,26 @@ app.get("/tasks", async (req, res) => {
             currentPage: parseInt(page),
             totalPages: Math.ceil(tasks.count / limit)
         });
-    } catch (error) {
-        console.error('Error fetching tasks:', error);
-        res.status(500).json({ error: "Failed to fetch tasks" });
-    }
-});
+    })
+);
 
-// Create task with validation and user association
-app.post("/task", validateTask, async (req, res) => {
-    try {
+// Create task
+app.post("/api/tasks",
+    routeLog('Create Task'),
+    authenticateToken,
+    validateTask,
+    asyncHandler(async (req, res) => {
+        // Ensure userId is set from authenticated user
         const taskData = {
             title: req.body.title,
             description: req.body.description,
-            status: req.body.status || "pending",
+            status: req.body.status || 'pending',
             dueDate: req.body.dueDate || null,
-            userId: req.body.userId
+            userId: req.user.id  // This should be set automatically
         };
+
+        console.log('Creating task with data:', taskData); // Debug log
+        console.log('Authenticated user:', req.user); // Debug log
 
         const newTask = await Task.create(taskData);
 
@@ -144,15 +254,16 @@ app.post("/task", validateTask, async (req, res) => {
         });
 
         res.status(201).json(createdTask);
-    } catch (error) {
-        console.error('Error creating task:', error);
-        res.status(400).json({ error: "Failed to create task", details: error.message });
-    }
-});
+    })
+);
 
-// Update task with validation
-app.put("/task/:id", validateTask, async (req, res) => {
-    try {
+// Update task
+app.put("/api/tasks/:id",
+    routeLog('Update Task'),
+    authenticateToken,
+    validateTask,
+    authorizeResourceOwnership(Task, 'id', 'userId'),
+    asyncHandler(async (req, res) => {
         const taskId = parseInt(req.params.id);
         const task = await Task.findByPk(taskId);
 
@@ -170,15 +281,15 @@ app.put("/task/:id", validateTask, async (req, res) => {
         });
 
         res.json(updatedTask);
-    } catch (error) {
-        console.error('Error updating task:', error);
-        res.status(500).json({ error: "Failed to update task" });
-    }
-});
+    })
+);
 
 // Delete task
-app.delete("/task/:id", async (req, res) => {
-    try {
+app.delete("/api/tasks/:id",
+    routeLog('Delete Task'),
+    authenticateToken,
+    authorizeResourceOwnership(Task, 'id', 'userId'),
+    asyncHandler(async (req, res) => {
         const taskId = parseInt(req.params.id);
         const task = await Task.findByPk(taskId);
 
@@ -188,17 +299,17 @@ app.delete("/task/:id", async (req, res) => {
 
         await task.destroy();
         res.json({ message: "Task deleted successfully" });
-    } catch (error) {
-        console.error('Error deleting task:', error);
-        res.status(500).json({ error: "Failed to delete task" });
-    }
-});
+    })
+);
 
-// COMMENT ROUTES
+// COMMENT ROUTES (Protected)
 
 // Add comment to task
-app.post("/tasks/:id/comments", validateCommentWithParams, async (req, res) => {
-    try {
+app.post("/api/tasks/:id/comments",
+    routeLog('Create Comment'),
+    authenticateToken,
+    validateCommentWithParams,
+    asyncHandler(async (req, res) => {
         const taskId = parseInt(req.params.id);
         const task = await Task.findByPk(taskId);
 
@@ -209,7 +320,7 @@ app.post("/tasks/:id/comments", validateCommentWithParams, async (req, res) => {
         const comment = await TaskComment.create({
             content: req.body.content,
             taskId: taskId,
-            userId: req.body.userId
+            userId: req.user.id  // Set automatically from authenticated user
         });
 
         // Fetch comment with user information
@@ -220,40 +331,14 @@ app.post("/tasks/:id/comments", validateCommentWithParams, async (req, res) => {
         });
 
         res.status(201).json(createdComment);
-    } catch (error) {
-        console.error('Error creating comment:', error);
-        res.status(400).json({ error: "Failed to create comment" });
-    }
-});
-
-// Get all comments for a task
-app.get("/tasks/:id/comments", async (req, res) => {
-    try {
-        const taskId = parseInt(req.params.id);
-        const task = await Task.findByPk(taskId);
-
-        if (!task) {
-            return res.status(404).json({ error: "Task not found" });
-        }
-
-        const comments = await TaskComment.findAll({
-            where: { taskId: taskId },
-            include: [
-                { model: User, as: 'User', attributes: ['id', 'username'] }
-            ],
-            order: [['createdAt', 'DESC']]
-        });
-
-        res.json(comments);
-    } catch (error) {
-        console.error('Error fetching comments:', error);
-        res.status(500).json({ error: "Failed to fetch comments" });
-    }
-});
+    })
+);
 
 // Get task with all comments
-app.get("/tasks/:id", async (req, res) => {
-    try {
+app.get("/api/tasks/:id",
+    routeLog('Get Task by ID'),
+    authenticateToken,
+    asyncHandler(async (req, res) => {
         const taskId = parseInt(req.params.id);
         const task = await Task.findByPk(taskId, {
             include: [
@@ -282,31 +367,23 @@ app.get("/tasks/:id", async (req, res) => {
         }
 
         res.json(task);
-    } catch (error) {
-        console.error('Error fetching task:', error);
-        res.status(500).json({ error: "Failed to fetch task" });
-    }
-});
+    })
+);
 
-// Delete a comment
-app.delete("/comments/:id", async (req, res) => {
-    try {
-        const commentId = parseInt(req.params.id);
-        const comment = await TaskComment.findByPk(commentId);
+// 404 handler for undefined routes
+app.use(notFoundHandler);
 
-        if (!comment) {
-            return res.status(404).json({ error: "Comment not found" });
-        }
+// Add error logging middleware here
+app.use(errorLog);
 
-        await comment.destroy();
-        res.json({ message: "Comment deleted successfully" });
-    } catch (error) {
-        console.error('Error deleting comment:', error);
-        res.status(500).json({ error: "Failed to delete comment" });
-    }
-});
+// Global error handler (must be last)
+app.use(globalErrorHandler);
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Enhanced Task Manager API with Users and Comments is running on port ${PORT}`);
+    console.log(`Enhanced Task Manager API with Security Features is running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Security features: Basic rate limiting, JWT auth, Input validation, Logging enabled`);
 });
+
+module.exports = app;

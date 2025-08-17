@@ -1,15 +1,19 @@
 const { Sequelize } = require("sequelize");
+const config = require("./config");
 
-const sequelize = new Sequelize("task_manager", "root", "", {
-    host: "localhost",
-    dialect: "mysql",
-    port: 3306,
-    logging: false,
-    // MySQL specific options
-    dialectOptions: {
-        charset: 'utf8mb4'
-    }
-});
+const env = process.env.NODE_ENV || "development"
+const dbConfig = config[env]
+const sequelize = new Sequelize(
+    dbConfig.database,
+    dbConfig.username,
+    dbConfig.password,
+    {
+        host: dbConfig.host,
+        port: dbConfig.port,
+        dialect: dbConfig.dialect,
+        logging: false,
+        dialectOptions: dbConfig.dialectOptions
+    });
 
 (async () => {
     try {

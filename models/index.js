@@ -1,7 +1,5 @@
 'use strict';
 
-const { Sequelize } = require('sequelize');
-const sequelize = require('../config/database.js');
 
 // Import models manually
 const Task = require('./task');
@@ -31,7 +29,6 @@ User.hasMany(TaskComment, {
 TaskComment.belongsTo(User, { foreignKey: 'userId' });
 
 module.exports = {
-  sequelize,
   Task,
   User,
   TaskComment
